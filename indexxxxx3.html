@@ -1,0 +1,264 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CPU Instruction Pipeline Simulator</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#0b1020;color:#f3f6ff;font-family:Arial,sans-serif;line-height:1.5}
+header{text-align:center;padding:28px 15px;background:#151d32;border-bottom:1px solid #35415c}
+header h1{color:#9baaff;margin:0}
+header p,.muted{color:#a5b0c8}
+main{max-width:1100px;margin:25px auto;padding:15px}
+.panel{background:#151d32;border:1px solid #293651;border-radius:14px;padding:22px;margin-bottom:20px}
+textarea,select{width:100%;padding:12px;background:#0b1020;color:white;border:1px solid #35415c;border-radius:8px;font:inherit}
+label{display:block;margin:12px 0 6px}
+button{padding:12px 18px;margin:12px 6px 0 0;border:0;border-radius:8px;background:#9baaff;color:#0b1020;font-weight:bold;cursor:pointer}
+button.secondary{background:#35d6a0}
+button.reset{background:#35415c;color:white}
+.pipeline{overflow-x:auto;margin-top:20px}
+table{border-collapse:collapse;width:100%;min-width:650px}
+th,td{border:1px solid #35415c;padding:12px;text-align:center}
+th{background:#202b4a;color:#b9c5ff}
+td.stage{background:#202b4a;color:#9baaff;font-weight:bold}
+td.active{background:#285a50;color:#8ff0cf}
+td.stall{background:#663b42;color:#ffd0d6}
+.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.card{background:#0b1020;padding:16px;border:1px solid #35415c;border-radius:9px}
+.card strong{display:block;font-size:25px;color:#9baaff}
+.status{padding:12px;background:#0b1020;border-radius:8px;margin-top:15px;color:#35d6a0}
+.note{font-size:13px;color:#a5b0c8}
+footer{text-align:center;padding:20px;color:#a5b0c8}
+@media(max-width:600px){.cards{grid-template-columns:1fr}.panel{padding:15px}}
+</style>
+</head>
+<body>
+<header>
+<h1>CPU Instruction Pipeline Simulator</h1>
+<p>Computer Organization and Architecture | COA Mini Project</p>
+</header>
+
+<main>
+<section class="panel">
+<h2>Instruction Input</h2>
+<p class="muted">Enter one instruction per line. The simulator models five pipeline stages.</p>
+<label for="instructions">Instructions</label>
+<textarea id="instructions" rows="5">LOAD R1, A
+ADD R2, R1, R3
+SUB R4, R2, R5
+MUL R6, R4, R7
+STORE R6, B</textarea>
+<button onclick="startSimulation()">Generate Pipeline</button>
+<button class="secondary" onclick="nextCycle()">Next Cycle</button>
+<button onclick="runAll()">Run All Cycles</button>
+<button class="reset" onclick="resetSimulation()">Reset</button>
+<p class="note">This simplified model inserts a one-cycle stall when an instruction depends on the immediately preceding instruction. It does not model forwarding or structural hazards.</p>
+<div id="message" class="status" role="status">Enter instructions and generate the pipeline.</div>
+</section>
+
+<section class="panel">
+<h2>Pipeline Statistics</h2>
+<div class="cards">
+<div class="card">Instructions<strong id="count">0</strong></div>
+<div class="card">Clock Cycles<strong id="cycles">0</strong></div>
+<div class="card">Stalls<strong id="stalls">0</strong></div>
+</div>
+<p id="cpi" class="muted">Cycles per instruction: —</p>
+</section>
+
+<section class="panel">
+<h2>Pipeline Execution Table</h2>
+<p class="muted">IF = Fetch, ID = Decode, EX = Execute, MEM = Memory, WB = Write Back.</p>
+<div class="pipeline" id="pipeline">
+<p class="muted">Generate a pipeline to view the execution table.</p>
+</div>
+</section>
+
+<section class="panel">
+<h2>Pipeline Concepts</h2>
+<p><b>Instruction Pipelining:</b> Multiple instructions are processed in overlapping stages.</p>
+<p><b>IF — Instruction Fetch:</b> Fetches the instruction from memory.</p>
+<p><b>ID — Instruction Decode:</b> Decodes the instruction and identifies registers.</p>
+<p><b>EX — Execute:</b> Performs the operation or calculates an address.</p>
+<p><b>MEM — Memory Access:</b> Reads or writes memory when required.</p>
+<p><b>WB — Write Back:</b> Writes the result to a register.</p>
+<p><b>Data Hazard:</b> An instruction needs a result from an earlier instruction that is not yet available.</p>
+</section>
+</main>
+
+<footer>CPU Instruction Pipeline Simulator | COA Mini Project</footer>
+
+<script>
+const stageNames = ["IF","ID","EX","MEM","WB"];
+let instructions = [];
+let schedule = [];
+let totalCycles = 0;
+let visibleCycles = 0;
+let stallCount = 0;
+
+function getRegisterAccess(line){
+    const text = line.trim().toUpperCase();
+    const parts = text.split(/\s+/);
+    const op = parts[0] || "";
+    const operands = (parts.slice(1).join(" ").match(/R\d+/g) || []);
+    const writes = ["LOAD","ADD","SUB","MUL","DIV","AND","OR","XOR","MOV"].includes(op);
+    return {
+        dest: writes ? (operands[0] || null) : null,
+        reads: writes ? operands.slice(1) : operands
+    };
+}
+
+function buildSchedule(lines){
+    const access = lines.map(getRegisterAccess);
+    const start = [];
+    let stalls = 0;
+
+    for(let i=0;i<lines.length;i++){
+        let earliest = i === 0 ? 0 : start[i-1] + 1;
+
+        // One stall after the immediately preceding instruction
+        // when its destination is read by this instruction.
+        if(i > 0 && access[i-1].dest &&
+           access[i].reads.includes(access[i-1].dest)){
+            earliest = Math.max(earliest,start[i-1]+2);
+            stalls++;
+        }
+
+        start.push(earliest);
+    }
+
+    const endCycle = start.length
+        ? Math.max(...start.map(s=>s+4)) : 0;
+
+    return {start,stalls,endCycle};
+}
+
+function startSimulation(){
+    const raw = document.getElementById("instructions").value.trim();
+    if(!raw){
+        document.getElementById("message").textContent =
+            "Please enter at least one instruction.";
+        return;
+    }
+
+    instructions = raw.split("\n").map(x=>x.trim()).filter(Boolean);
+
+    if(instructions.length>12){
+        document.getElementById("message").textContent =
+            "Please enter no more than 12 instructions.";
+        return;
+    }
+
+    const result = buildSchedule(instructions);
+    schedule = result.start;
+    stallCount = result.stalls;
+    totalCycles = result.endCycle;
+    visibleCycles = 0;
+
+    document.getElementById("count").textContent = instructions.length;
+    document.getElementById("cycles").textContent = totalCycles;
+    document.getElementById("stalls").textContent = stallCount;
+    document.getElementById("cpi").textContent =
+        "Cycles per instruction: " +
+        (totalCycles/instructions.length).toFixed(2);
+
+    renderPipeline();
+    document.getElementById("message").textContent =
+        "Pipeline generated successfully. Click Next Cycle to step through it.";
+}
+
+function renderPipeline(){
+    const container = document.getElementById("pipeline");
+
+    if(!instructions.length){
+        container.innerHTML = '<p class="muted">Generate a pipeline first.</p>';
+        return;
+    }
+
+    let html = "<table><thead><tr><th>Instruction</th>";
+    for(let c=1;c<=totalCycles;c++){
+        html += "<th>C"+c+"</th>";
+    }
+    html += "</tr></thead><tbody>";
+
+    instructions.forEach((instruction,i)=>{
+        html += "<tr><td class='stage'>"+escapeHTML(instruction)+"</td>";
+
+        for(let c=0;c<totalCycles;c++){
+            let offset = c-schedule[i];
+            let content = "";
+            let cls = "";
+
+            if(offset>=0 && offset<5){
+                content = stageNames[offset];
+                if(c<visibleCycles) cls="active";
+            } else if(offset<0 && i>0 && c>=schedule[i-1]+1 &&
+                      c<schedule[i]){
+                content = "STALL";
+                if(c<visibleCycles) cls="stall";
+            }
+
+            html += "<td class='"+cls+"'>"+content+"</td>";
+        }
+
+        html += "</tr>";
+    });
+
+    html += "</tbody></table>";
+    container.innerHTML = html;
+}
+
+function escapeHTML(text){
+    return text.replace(/[&<>"']/g, char => ({
+        "&":"&amp;","<":"&lt;",">":"&gt;",
+        '"':"&quot;","'":"&#39;"
+    })[char]);
+}
+
+function nextCycle(){
+    if(!instructions.length){
+        startSimulation();
+        if(!instructions.length) return;
+    }
+
+    if(visibleCycles<totalCycles) visibleCycles++;
+    renderPipeline();
+
+    document.getElementById("message").textContent =
+        visibleCycles>=totalCycles
+        ? "Pipeline execution complete!"
+        : "Showing completed stages through cycle "+visibleCycles+".";
+}
+
+function runAll(){
+    if(!instructions.length){
+        startSimulation();
+        if(!instructions.length) return;
+    }
+    visibleCycles=totalCycles;
+    renderPipeline();
+    document.getElementById("message").textContent =
+        "All pipeline cycles displayed.";
+}
+
+function resetSimulation(){
+    instructions=[];
+    schedule=[];
+    totalCycles=0;
+    visibleCycles=0;
+    stallCount=0;
+
+    document.getElementById("count").textContent="0";
+    document.getElementById("cycles").textContent="0";
+    document.getElementById("stalls").textContent="0";
+    document.getElementById("cpi").textContent="Cycles per instruction: —";
+    document.getElementById("pipeline").innerHTML =
+        '<p class="muted">Generate a pipeline to view the execution table.</p>';
+    document.getElementById("message").textContent =
+        "Reset complete. Generate a pipeline to begin.";
+}
+</script>
+</body>
+</html>
